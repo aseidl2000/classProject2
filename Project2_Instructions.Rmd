@@ -1,0 +1,728 @@
+---
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# QuickStart Data Science Bootcamp<br>Cohorts 3 and 4 - Jonathan Fowler
+
+## Project 2 (R)
+```
+For this project, think of yourself as a developer on a corporate business intelligence team. You have been given a flat file (CSV format) of login information from Maximo, an asset tracking system the company relies on. Current licensing requires that no more than 95 users in the AUTHORIZED and/or LIMITED groups be online at any given time. The deliverables outlined in this project will be submitted to the IT director, who wants to be sure that the licensing threshold is not exceeded.
+
+### The Data
+
+The data is included in this project. The filename is **Project2Data.csv**.
+
+| Field     | Description   |
+|-----------|--------------|
+| attemptdate        | Date and Time of event          |
+| attemptresult | LOGIN, LOGOUT, TIMEOUT, or SYSLOGOUT |
+| userid  | The user triggering the event |
+| type      | User type, i.e., AUTHORIZED |
+| maxsessionuid   | Unique identifer for a session. This will show up from LOGIN to LOGOUT, TIMEOUT, or SYSLOGOUT. |
+```
+```{r setup, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+rm(list=ls())
+```
+### Part 1
+
+# Let's answer some basic questions about the dataset. You may insert your code below each of these lines.  
+
+#**Prework: Load the CSV file into your environment.**  
+```{r}
+Proj2Data <- read.csv("Project2Data.csv")
+summary(Proj2Data) # Data loads successfully
+```
+
+#**1. How many unique users? A simple number will do here, no tables or formatting needed.**  
+```{r}
+NumUsers <- length(unique(Proj2Data$userid))
+# The number of users is 763
+```
+
+#**2. How many unique levels, unique users in each? I want a table that shows this information together.**  
+
+# One aspect of constructing UserType this way is that it only eliminates unique rows, not unique users
+# That way, if some users' type changes over the time period, they will get counted multiple times
+# Maybe such information would be helpful some day
+# But for now, if we only want unique users and  can forget about their type, we have to check for duplicate users after eliminating duplicate rows
+
+UserType <- data.frame("userid" = Proj2Data$userid, "type" = Proj2Data$type)
+UserType <- unique(UserType) 
+# shows users in column 1 and their type in column 2
+nrow(UserType) 
+# shows 763 rows, meaning no users were duplicated, and all users only had 1 type during March
+nrow(UserType) == NumUsers 
+# Checks if any users had more than 1 type in March.  They did not, so the answer is "TRUE"
+table(UserType$type)  
+# shows a table of the number of users in each type
+# shows 196 Express, 141 Authorized, and 426 Limited users
+
+
+
+#**3. What is the average session time for each unique group?**  
+
+# Question number 4 was eliminated, but there was still a need to remove duplicates to get a good answer
+# to number 3.  There were several kinds of duplicates which were removed in different ways.
+
+SessionData <- Proj2Data[order(Proj2Data$maxsessionuid),] #Order everything by maxsessionuid to visualize
+# Observe about 1400 rows where maxsessionuid = 0.  These are likely to cause problems and will be eliminated
+SessionData <- na.omit(SessionData[SessionData$maxsessionuid != 0,]) 
+# gets rid of NA and 0, around 1000 of 57000 rows, no big deal
+SessionStart <- SessionData[SessionData$attemptresult == "LOGIN",] 
+# selects only the logins
+SessionEnd <- SessionData[SessionData$attemptresult != "LOGIN",] 
+# selects only logouts
+SessionStartEnd <- merge(SessionStart, SessionEnd, by = "maxsessionuid") 
+# Merges every maxsessionuid so it has a login and logout in the same row.
+# Only sessions with a login are counted.  The first few sessions with an unknown login are orphaned
+# SessionStartEnd[SessionStartEnd$attemptresult.y == "RESTART",] 
+# shows 18 restarts, which count as a logout, and were left in.
+nrow(SessionStartEnd)
+# shows 28819 rows
+table(SessionStartEnd$userid.x == SessionStartEnd$userid.y)
+# shows userid.x and .y are always the same
+table(SessionStartEnd$type.x == SessionStartEnd$type.y)
+# shows type.x and .y are always the same
+SessionStartEnd <- SessionStartEnd[,-match(c("userid.y","type.y"),names(SessionStartEnd))] 
+# gets rid of redundant userid.y and type.y data columns because we have shown they are always redundant
+SessionStartEnd$difftime <- difftime(SessionStartEnd$attemptdate.y, SessionStartEnd$attemptdate.x, unit="mins")
+# shows each session time in minutes
+length(SessionStartEnd$difftime[SessionStartEnd$difftime == 0])
+# shows 1563 sessions where length = 0 minutes, or about 5% of all sessions. I would delete them, but I heard we are instructed to leave them in.  I left them in for this problem, #3.
+table(SessionStartEnd$attemptresult.y) # 2399 syslogouts
+# There are 2399 syslogouts which are usually, but not always, after another logout.  We will have to keep them for now
+
+# SessionStartEnd <- SessionStartEnd[SessionStartEnd$attemptresult.y != "SYSLOGOUT",]
+# table(SessionStartEnd$attemptresult.y) # 0 syslogouts
+# Now the only logouts are logouts, timeouts, and a tiny handful of restarts.
+# nrow(SessionStartEnd)
+# Rows have been reduced to 26420.  But more duplicates still need to be removed. Some sessionids are duplicated, for example 876350
+table(duplicated(SessionStartEnd$maxsessionuid)) 
+# shows 35 duplicates and 26385 nonduplicates if syslogouts are eliminated
+# shows 2361 duplicates if syslogouts are included
+
+
+# SessionByDate <- SessionStartEnd[order(SessionStartEnd$attemptdate.x,SessionStartEnd$attemptdate.y),] 
+
+# orders everything first by logout date, then orders everything by login date.  All sessionids will be grouped.  For all duplicate sessions, the longest session will be the last one.  We had some discussion about how to count the duplicates.  To delete more rows will reduce the number of current users at any given time and make our company more likely to stay below the 95 user threshold, but there could be an ethical problem to this.  We unfortunately don't know and can't know what kinds of sessions should count for sure, but Maximo has an incentive to inflate this number and our company has an incentive to decrease it. I f a user logged in to 2 different sessionids at the exact same second, I will treat that as 1 session, ending at the first logout given.  If they logged in to different sessionids at different moments in time, though the sessions themselves overlap, I would conclude that multiple people may be using the same user account, and it could be viewed as dishonest if we combined them into only one session, so I will leave those as separate.
+
+# for example, the following sessionids will be treated as 1 session:
+#131	875215	2020-03-01 16:23:09	LOGIN	HBA2023	AUTHORIZED	2020-03-01 16:53:46	TIMEOUT	30.61666
+#132	875216	2020-03-01 16:23:09	LOGIN	HBA2023	AUTHORIZED	2020-03-01 16:53:11	TIMEOUT	30.03333
+
+# These sessions, however, will be counted separately:
+#36	874304	2020-03-01 06:25:22	LOGIN	HBA1654	LIMITED	2020-03-01 06:58:09	TIMEOUT	32.783
+#37	873908	2020-03-01 06:27:19	LOGIN	HBA1654	LIMITED	2020-03-01 07:00:41	RESTART	33.366
+#38	874105	2020-03-01 06:28:04	LOGIN	HBA1654	LIMITED	2020-03-01 06:49:36	TIMEOUT	21.53
+#39	874204	2020-03-01 06:30:05	LOGIN	HBA1654	LIMITED	2020-03-01 06:54:02	TIMEOUT	23.95
+
+SessionByUser <- SessionStartEnd[order(SessionStartEnd$userid.x,SessionStartEnd$attemptdate.x,SessionStartEnd$attemptdate.y),]
+row.names(SessionByUser) <- NULL
+# Resets row numbers after sorting
+nrow(SessionByUser[duplicated(SessionByUser$maxsessionuid),])
+# shows duplicated sessions, in case you want to view them to confirm, 2361
+SessionByUser2 <- SessionByUser[!duplicated(SessionByUser$maxsessionuid),] 
+# gets rid of the 2nd of 2 duplicated sessionids, which are always longer than the 1st entry
+nrow(SessionByUser)
+# 28819 rows
+nrow(SessionByUser2)
+# 26458 rows, 2361 difference
+# Some other duplicates remain and need to be found
+table(SessionByUser2$attemptresult.y)
+# There are only 202 syslogouts remaining, but these occur as the earliest logouts for that session
+table(duplicated(SessionByUser2$attemptdate.x)) 
+# shows 1245 out of 26458 logins with unique sessionids which were at the exact same second.  Suspicious.  I will remove the second entry of each of these.
+
+# Now let's remove other duplicates.  This has been more complicated than anticipated.  Sometimes, a user logs on more than 2 times simultaneously, so we want to catch all replicates, not just 1 of them.
+
+DupIndex <- c()
+# Initializes an empty array
+
+#SessionByUser <- SessionByDate3[order(SessionByDate3$userid.x,SessionByDate3$attemptdate.x),] 
+row.names(SessionByUser2) <- NULL
+# Reorder row numbers
+SessionByUser2$userid.x <- as.character(SessionByUser2$userid.x)
+
+for(val in 2:length(SessionByUser2$userid.x)-1)
+# This creates an array from 1 to the length of the column minus 1
+{
+if(SessionByUser2$userid.x[val] == SessionByUser2$userid.x[val+1] && difftime(SessionByUser2$attemptdate.x[val],SessionByUser2$attemptdate.x[val+1])==0)
+{
+#print(SessionByUser$userid.x[val])
+DupIndex <- append(DupIndex,val+1)
+}
+#else{print("F")}
+}
+length(DupIndex)
+# Shows 984 sessions with same user starting at same time
+SessionByUser3 <- SessionByUser2[-DupIndex,]
+nrow(SessionByUser2)-nrow(SessionByUser3)
+# 984 rows were omitted 
+
+for(val in 2:length(DupIndex)-1)
+# Function for printing instances of multiple replicates, for example one user logged in 5 times
+{
+if((DupIndex[val+1] - DupIndex[val])==1)
+{
+print(DupIndex[val])
+}
+}
+
+
+```
+
+row.names(SessionByDate) <- NULL
+# resets row numbers which had been messed up by reordering
+
+nrow(SessionByDate[duplicated(SessionByDate$maxsessionuid),] )
+# shows duplicated sessions, in case you want to view them to confirm, 2361
+SessionByDate2 <- SessionByDate[!duplicated(SessionByDate$maxsessionuid),] 
+nrow(SessionByDate)
+# 28819 rows
+nrow(SessionByDate2)
+# 26458 rows, 2361 difference
+# Deletes redundant sessionids
+# Some other duplicates remain and need to be found
+table(SessionByDate2$attemptresult.y)
+# There are only 202 syslogouts remaining
+table(duplicated(SessionByDate2$attemptdate.x)) 
+# shows 1245 out of 26458 logins with unique sessionids which were at the exact same second.  Suspicious.  I will remove the second entry of each of these.
+
+row.names(SessionByDate2) <- NULL
+# resets row numbers which had been messed up by deleting rows
+SessionTime1 <- SessionByDate2[duplicated(SessionByDate2$attemptdate.x),"attemptdate.x"] 
+# finds 1245 duplicate datetimes, including duplicate user logins.  Note the different sessionids for this single user HBA2023.  We need to get rid of these cases without deleting unique users who happen to login at the same time.
+
+#131	875215	2020-03-01 16:23:09	LOGIN	HBA2023	AUTHORIZED	2020-03-01 16:53:46	TIMEOUT	30.61666
+#132	875216	2020-03-01 16:23:09	LOGIN	HBA2023	AUTHORIZED	2020-03-01 16:53:11	TIMEOUT	30.03333
+
+DupFinder <- data.frame(SessionTime1) 
+DupFinder$User1 <- SessionByDate2[match(SessionTime1, SessionByDate2$attemptdate.x),"userid.x"]
+DupFinder$User2 <- SessionByDate2[match(SessionTime1, SessionByDate2$attemptdate.x)+1,"userid.x"]
+#DupFinder$User3 <- SessionByDate2[match(SessionTime1, SessionByDate2$attemptdate.x)+2,"userid.x"]
+DupFinder$Dup <- DupFinder$User1 == DupFinder$User2
+#DupFinder$Dup2 <- DupFinder$User2 == DupFinder$User3
+nrow(DupFinder)
+table(DupFinder$Dup) 
+# shows 992 out of 1245 duplicated login datetimes belong to the same user, and are therefore duplicates
+
+nrow(SessionByDate2)
+# 26458 rows
+Rejects <- match(SessionTime1, SessionByDate2$attemptdate.x)
+Rejects2 <- Rejects[DupFinder$Dup == TRUE]
+SessionByDate3 <- SessionByDate2[-(Rejects2+1),]
+# The +1 is to remove the 2nd one of the 2 duplicate entries, which is the longer lasting one
+nrow(SessionByDate3)
+# 929 rows were removed, leaving 25529
+length(Rejects2)
+# 992 rejects
+nrow(SessionByDate2) - nrow(SessionByDate3)
+# 929, instead of 992, because some of the time there is a triplicate of users logging on at the same time, and only the 2nd and 3rd are the same userid.  The function isn't perfect, but it caught over 90% of cases and I would say that's good enough.
+
+#What if a user logs in at one moment, then manages to login a second time a minute later, and has a 30 minute session.  The code I have written would not catch that.  But we'll catch it later.  We've done enough for now.
+```
+
+
+```
+1) Question 4 is no longer part of this project. Please ignore.
+2) There is a scratch script in the updated Project 2 RStudio Cloud file that can help you work towards the remaining questions.
+3) You are encouraged to work together as a development team. You will still be submitting individual work, but I encourage you to work together to solve issues and learn how to collaborate as a dev team.
+4) In addition to your code, I’d like to see a brief paragraph on your experience from start to finish on the project. How did it feel to get the specs and realize that you needed more information/clarification, working together as a team, and being able to push back some on the client (me) in order to set expectations?
+5) Please feel free to join all QA sessions this week regardless of which one you are in. Also, Gina Choe is the point person for the student work sessions outside of QA time. (Thank you Gina for organizing!)
+
+I know this assignment is not as easy as it may have looked in the beginning, and I understand the feelings you’ve shared. Trust me, I’ve been where you are. The good news is that you all are taking it in stride and responding with excellent questions, clarification, and level-setting. I am so happy for your progress.
+
+
+
+
+#SessionData3 <- SessionData3[SessionData3$difftime !=0,] # eliminates sessions with 0 seconds
+names(SessionData3)
+
+x <- c("a","b","c","d","e")
+x[3]
+match("c", x)
+match(c("userid.y","type.y"),names(SessionData3))
+```
+
+mean(SessionByUser3$difftime)
+# Time difference of 33.61867 mins
+
+mean(SessionByUser3$difftime[SessionByUser3$type.x == "LIMITED"])
+# Time difference of 28.61101 mins
+mean(SessionByUser3$difftime[SessionByUser3$type.x == "AUTHORIZED"])
+# Time difference of 40.16301 mins
+mean(SessionByUser3$difftime[SessionByUser3$type.x == "EXPRESS"])
+# Time difference of 25.71165mins
+
+
+
+#**4. Which users have more than one session going at the same time?**  
+
+#The users who still, somehow, have multiple sessions are listed below.  They are hard to find because their "sessions" don't start at exactly the same time.
+
+DupUsers <- c()
+# Initialized an empty array
+
+SessionByUser4 <- SessionByUser3[order(SessionByUser3$userid.x,SessionByUser3$attemptdate.x),] 
+row.names(SessionByUser4) <- NULL
+SessionByUser$userid.x <- as.character(SessionByUser$userid.x)
+# New dataframe organized by date, reordered, and userid converted from factor to character
+
+for(val in 2:length(SessionByUser4$userid.x)-1)
+# Goes from the first value to the 2nd to last value in the userid column
+{
+if(SessionByUser4$userid.x[val] == SessionByUser4$userid.x[val+1] && difftime(SessionByUser4$attemptdate.y[val],SessionByUser4$attemptdate.x[val+1])>0)
+# If the userid from one row is the same as in the next row, AND the end time from the first
+# row is earlier than the start time of the next row, then we know the sessions overlap
+{
+#print(SessionByUser4$userid.x[val])
+
+DupUsers <- append(DupUsers,SessionByUser$userid.x[val])
+# Creates an array full of userids, populated for each time they have a duplicate session
+}
+#else{print("F")}
+}
+length(DupUsers)
+# Shows 2175 sessions with some overlap for the same user
+length(unique(DupUsers))
+# shows 364 users have some overlap at some time.
+
+
+```
+Sample if statement to copy from
+priceCalculator <- function(hours, pph=40){
+    net.price <- hours * pph
+    if(hours > 100) {
+      net.price <- net.price * 0.9
+    }
+    round(net.price)
+}
+
+
+table(duplicated(SessionData3$maxsessionuid)) # shows 2361 duplicates and 26458 nonduplicates
+SessionData3[duplicated(SessionData3$maxsessionuid),] # shows
+unique(SessionData3[duplicated(SessionData3$maxsessionuid),"userid.x"]) # 
+DupUsers <- unique(SessionData3[duplicated(SessionData3$maxsessionuid),"userid.x"]) 
+length(DupUsers) # 471
+
+table(duplicated(SessionDataNoSyslogout$maxsessionuid)) # shows 34 duplicates and 24823 nonduplicates
+SessionDataNoSyslogout[duplicated(SessionData3$maxsessionuid),] # shows
+unique(SessionDataNoSyslogout[duplicated(SessionDataNoSyslogout$maxsessionuid),"userid.x"]) # 
+DupUsers <- unique(SessionDataNoSyslogout[duplicated(SessionDataNoSyslogout$maxsessionuid),"userid.x"]) 
+length(DupUsers) # 30
+
+
+length(SessionDataNoSyslogout[duplicated(SessionDataNoSyslogout$maxsessionuid),]) #35 rows
+```
+### Part 2
+```
+Your objective in this part is to create a Gantt chart that shows the following:  
+1. One unique userid per row <br>
+2. A Gantt chart on the right <br>
+3. Blocks of time representing when each user logged in, mapped on the time field <br>
+4. User's time blocks colored by which group they belong to <br>
+```
+#"Here's what you asked for ..." "...But here's what I think you really want"
+
+# https://Quickstart.zoom.us/j/6251206544  Cohort 3 link
+
+
+```
+myMatrix <- matrix(0, ncol = NumUsers+5, nrow = 44640)
+Mar2020Users <- as.data.frame(myMatrix)
+dim(Mar2020Users)
+names(Mar2020Users) <- c("minute", 1:NumUsers, "sum","0","0","0")
+UserType[1:10,]
+
+31*24*60
+
+Mar2020Users$minute <- 1:31*24*60
+
+```
+#"Here's what you asked for ..." 
+
+library(ggplot2)
+
+Gantt1 <- ggplot(SessionByUser3, aes(x=attemptdate.x, xend=attemptdate.y, y=userid.x, yend=userid.x, color=type.x)) +
+  theme_bw()+ #use ggplot theme with black gridlines and white background
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+  panel.grid.major.x = element_line(size=0.5, colour="white"),
+  axis.title=element_text(size=rel(0.8), family="Source Sans Pro Semibold"))+
+  geom_segment(size=1) + #increase line width of segments in the chart
+  labs(title='Gantt Chart', x='Time', y='User ID')+
+  scale_x_discrete(guide = guide_axis(check.overlap = TRUE))+
+  scale_y_discrete(guide = guide_axis(check.overlap = TRUE))
+
+
+
+#"...But here's what I think you really want"
+
+
+
+SessionByUser5 <- SessionByUser3
+SessionByUser5$Minute <- ceiling(difftime(SessionByUser5$attemptdate.x,"2020-03-01 00:00:00",units = "mins"))
+# Minute will represent the login minute time as an integer
+SessionByUser5$LogoutMinute <- ceiling(difftime(SessionByUser5$attemptdate.y,"2020-03-01 00:00:00",units = "mins"))
+# Logout will be the logout minute as an integer
+
+SessionByUser5$SesLengthMinutes <- ceiling(SessionByUser5$difftime)
+row.names(SessionByUser5) <- NULL
+# Reorder by date and reset row numbers
+
+SessionLim <- SessionByUser5[SessionByUser5$type.x == "LIMITED",]
+SessionAuth <- SessionByUser5[SessionByUser5$type.x == "AUTHORIZED",]
+SessionExp <- SessionByUser5[SessionByUser5$type.x == "EXPRESS",]
+# Create different dataframes for each usertype
+
+SessionNoExp <- SessionByUser5[SessionByUser5$type.x != "EXPRESS" & SessionByUser5$difftime != 0,]
+# Double ampersands did not work for this
+SessionNoExp <- SessionNoExp[order(SessionNoExp$attemptdate.x),]
+row.names(SessionNoExp) <-NULL
+
+
+#&& SessionByDate3$difftime != 0
+#SessionByDate3$type.x != "EXPRESS" && SessionByDate3$difftime != 0 Double ampersands did not work
+
+Mar2020 <- data.frame("minute" = 1:(31*24*60+600),"logins" = 0, "logouts" = 0, "CurUsers" = 0, "CurUsers2" = 0, "LimIn" = 0, "LimOut" = 0, "AuthIn" = 0, "AuthOut" = 0, "ExpIn" = 0, "ExpOut" = 0, "CurLim" = 0, "CurAuth" = 0, "CurExp" = 0)
+Mar2020$date <- as_datetime("2020-03-01 00:00:00") + Mar2020$minute*60
+# Could not figure out how to initialize this properly, but added it at the end.
+str(Mar2020)
+head(Mar2020)
+
+```
+for(val in SessionNoExp$Minute)
+{
+Mar2020$logins[val] = Mar2020$logins[val] + 1
+Mar2020$CurUsers[val:(val+as.numeric(SessionNoExp$SesLengthMinutes))] = Mar2020$CurUsers[val:(val+as.numeric(SessionNoExp$SesLengthMinutes))] + 1
+}
+# This didn't work for some reason but it was only overestimating by 20% and I haven't figured out why.  It came just close enough to the right answer to make me think it was right and waste a lot of time on it.
+```
+
+for(val in SessionNoExp$Minute)
+{
+Mar2020$logins[val] = Mar2020$logins[val] + 1
+}
+for(val in SessionNoExp$LogoutMinute)
+{
+Mar2020$logouts[val] = Mar2020$logouts[val] + 1
+}
+#Mar2020$CurUsers2 <- 0
+for(val in Mar2020$minute)
+{
+Mar2020$CurUsers2[val+1]=Mar2020$CurUsers2[val]+Mar2020$logins[val]-Mar2020$logouts[val]
+}
+
+#Mar2020[4700:5000,]
+
+for(val in SessionLim$Minute)
+{
+Mar2020$LimIn[val] = Mar2020$LimIn[val] + 1
+}
+for(val in SessionLim$LogoutMinute)
+{
+Mar2020$LimOut[val] = Mar2020$LimOut[val] + 1
+}
+#Mar2020$CurLim <- 0
+for(val in Mar2020$minute)
+{
+Mar2020$CurLim[val+1]=Mar2020$CurLim[val]+Mar2020$LimIn[val]-Mar2020$LimOut[val]
+}
+
+#Mar2020[4700:5000,]
+
+for(val in SessionAuth$Minute)
+{
+Mar2020$AuthIn[val] = Mar2020$AuthIn[val] + 1
+}
+for(val in SessionAuth$LogoutMinute)
+{
+Mar2020$AuthOut[val] = Mar2020$AuthOut[val] + 1
+}
+#Mar2020$CurLim <- 0
+for(val in Mar2020$minute)
+{
+Mar2020$CurAuth[val+1]=Mar2020$CurAuth[val]+Mar2020$AuthIn[val]-Mar2020$AuthOut[val]
+}
+
+#Mar2020[4700:5000,]
+
+for(val in SessionExp$Minute)
+{
+Mar2020$ExpIn[val] = Mar2020$ExpIn[val] + 1
+}
+for(val in SessionExp$LogoutMinute)
+{
+Mar2020$ExpOut[val] = Mar2020$ExpOut[val] + 1
+}
+#Mar2020$CurExp <- 0
+for(val in Mar2020$minute)
+{
+Mar2020$CurExp[val+1]=Mar2020$CurExp[val]+Mar2020$ExpIn[val]-Mar2020$ExpOut[val]
+}
+
+Mar2020[4800:5000,]
+
+max(Mar2020$CurUsers2)
+
+#Timeline <- 
+
+ggplot(Mar2020, aes(x=date)) + 
+geom_line(aes(y=CurUsers2)) + 
+geom_line(aes(y=CurLim), color="red") + 
+geom_line(aes(y=CurAuth), color="blue") + 
+geom_line(aes(y=CurExp), color="green") + 
+labs(title="Users in March", y="Users", x="Date", subtitle="black = auth + lim, blue = auth, red = lim, green = exp") +
+theme(plot.title = element_text(size=20,face="bold",hjust=0.5,lineheight=1.2),
+  plot.subtitle = element_text(size=10)) 
+
+
+
+#annotate("label", x = max(grossunits), y = meancbrate, label = "avg rate") 
+
+
+```
+theme(plot.title=element_text(size=20, 
+                                    face="bold", 
+                                    family="American Typewriter",
+                                    color="tomato",
+                                    hjust=0.5,
+                                    lineheight=1.2),  # title
+            plot.subtitle=element_text(size=15, 
+                                       family="American Typewriter",
+                                       face="bold",
+                                       hjust=0.5),  # subtitle
+            plot.caption=element_text(size=15),  # caption
+            axis.title.x=element_text(vjust=10,  
+                                      size=15),  # X axis title
+            axis.title.y=element_text(size=15),  # Y axis title
+            axis.text.x=element_text(size=10, 
+                                     angle = 30,
+                                     vjust=.5),  # X axis text
+         axis.text.y=element_text(size=10))  # Y axis text
+```
+max(Mar2020$CurUsers2)
+
+#123 with no filtering, 106 after filtering out duplicates, 104 after filtering out EXPRESS logins, still 98 after filtering out 0-minute sessions.  Started over with SessionByUser5, and the result was 113 max.  Started over again, fixing some of the duplicate removal, and the new max was 97.  After building the new function below, and redoing the whole thing, the new max was 83.  Drawing SessionByUser5 from SessionByUser2 instead of SessionByUser3, the number rises to 93
+
+#Let's at least document the 117 authorized or limited users at 6:40AM on March 4th
+timestamp <- as.numeric(as_datetime("2020-03-04 06:39:00"))
+Users117 <- SessionNoExp[as.numeric(as_datetime(SessionNoExp$attemptdate.x))<timestamp & as.numeric(as_datetime(SessionNoExp$attemptdate.y))>timestamp,]
+nrow(Users117)
+
+# Well now it looks like there are only 71 users.  More investigation is needed.
+
+
+
+
+#2841	878640	2020-03-04 06:30:45	LOGIN	HBA1849	LIMITED	2020-03-04 07:01:18	TIMEOUT	30.55	4711	31
+#2842	878641	2020-03-04 06:30:46	LOGIN	HBA1849	LIMITED	2020-03-04 07:05:46	TIMEOUT	35	4711	35
+#2843	878940	2020-03-04 06:30:46	LOGIN	HBA2346	LIMITED	2020-03-04 07:01:37	TIMEOUT	30.85	4711	31
+#2844	878941	2020-03-04 06:30:46	LOGIN	HBA2346	LIMITED	2020-03-04 10:53:51	LOGOUT	263.083333333333	4711	264
+
+# This shows 1 case of duplicate where the logins for HBA1849 were only 1 second apart, and the 2 sessions lasted 30-35 minutes
+# There is also 1 case of HBA2346, who was logged in twice at the same time.  This was not filtered out by the earlier DupFinder because his login happened to be at the exact same time as HBA1849, and was not caught.  It was one of those funny triplicate cases.  Now, let's get rid of all these duplicates
+
+#
+
+
+
+
+
+#----------------
+
+SessionDataNoSyslogout$Minute <- ceiling(difftime(SessionDataNoSyslogout$attemptdate.x,"2020-03-01 00:00:00",units = "mins"))
+
+SessionDataNoSyslogout$SesLengthMinutes <- ceiling(SessionDataNoSyslogout$difftime/60)
+
+Mar2020 <- data.frame("minute" = 1:(31*24*60),"logins" = 0, "logouts" = 0, "CurUsers" = 0)
+class(Mar2020$date) = POSIXct
+Mar2020$CurUsers[3] <- 0#Mar2020$CurUsers[3] + 1
+Mar2020$date <- as_datetime("2020-03-01 00:00:00") + Mar2020$minute*60
+str(Mar2020)
+head(Mar2020)
+
+for(val in SessionDataNoSyslogout$Minute[SessionDataNoSyslogout$type.x != "EXPRESS"])
+{
+Mar2020$logins[val] = Mar2020$logins[val] + 1;
+Mar2020$CurUsers[val:(val + SessionDataNoSyslogout$SesLengthMinutes)] = Mar2020$CurUsers[val:(val + SessionDataNoSyslogout$SesLengthMinutes)] + 1
+}
+
+TimelineNoSyslogout <- ggplot(Mar2020[4700:4800,], aes(x=date, y=CurUsers)) + geom_line() + geom_point()
+TimelineNoSyslogout
+
+
+x <- SessionData3$Minute
+count <- 0
+for (val in x) {
+if(val %% 2 == 0)  count = count+1
+}
+print(count)
+
+
+
+ggplot(SessionData3[3000:9000,], aes(x=attemptdate.x, xend=attemptdate.y, y=userid.x, yend=userid.x, color=type.x)) +
+  theme_bw()+ #use ggplot theme with black gridlines and white background
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+  panel.grid.major.x = element_line(size=0.5, colour="grey80"),
+  axis.title=element_text(size=rel(0.8), family="Source Sans Pro Semibold"))+
+  geom_segment(size=1) + #increase line width of segments in the chart
+  labs(title='Gantt Chart', x='Time', y='User ID')+
+  scale_x_discrete(guide = guide_axis(check.overlap = TRUE))+
+  scale_y_discrete(guide = guide_axis(check.overlap = TRUE))
+  
+  
+  
+ggplot(SessionData3[1:30,], aes(x=attemptdate.x, xend=attemptdate.y, y=userid.x, yend=userid.x, color=type.x)) +
+  theme_bw()+ #use ggplot theme with black gridlines and white background
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  geom_segment(size=2) + #increase line width of segments in the chart
+  labs(title='Gantt Chart', x='Time', y='User ID')
+  
+# Custom theme for making a clean Gantt chart
+theme_gantt <- function(base_size=11, base_family="Source Sans Pro Light") {
+  ret <- theme_bw(base_size, base_family) %+replace%
+    theme(panel.background = element_rect(fill="#ffffff", colour=NA),
+          axis.title.x=element_text(vjust=-0.2), axis.title.y=element_text(vjust=1.5),
+          title=element_text(vjust=1.2, family="Source Sans Pro Semibold"),
+          panel.border = element_blank(), axis.line=element_blank(),
+          panel.grid.minor=element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_line(size=0.5, colour="grey80"),
+          axis.ticks=element_blank(),
+          legend.position="bottom", 
+          axis.title=element_text(size=rel(0.8), family="Source Sans Pro Semibold"),
+          strip.text=element_text(size=rel(1), family="Source Sans Pro Semibold"),
+          strip.background=element_rect(fill="#ffffff", colour=NA),
+          panel.spacing.y=unit(1.5, "lines"),
+          legend.key = element_blank())
+  
+  ret
+}
+
+# Calculate where to put the dotted lines that show up every three entries
+x.breaks <- seq(length(SessionDataNoSyslogout[1:30,]) + 0.5 - 3, 0, by=-3)
+
+Gantt2 <- SessionDataNoSyslogout
+Gantt2$attemptdate.x <- as.Date(Gantt2$attemptdate.x)
+Gantt2$attemptdate.y <- as.Date(Gantt2$attemptdate.y)
+str(Gantt2)
+
+
+class(SessionDataNoSyslogout$attemptdate.x)
+ymd(09-03-01)
+now()
+
+Gantt2.long <- Gantt2 %>%
+mutate(attemptdate.x = ymd(attemptdate.x),
+         attemptdate.y = ymd(attemptdate.y)) %>%
+  gather(date.type, task.date, -c(Project, Task)) %>%
+  arrange(date.type, task.date) %>%
+  mutate(Task = factor(Task, levels=rev(unique(Task)), ordered=TRUE))
+
+str(Gantt2)
+
+
+# Build plot
+timeline <- ggplot(Gantt2[1:10,], aes(x=userid.x, y=attemptdate.x, colour=type.x)) + 
+  geom_line(size=6) + 
+  geom_vline(xintercept=x.breaks, colour="grey80", linetype="dotted") + 
+  guides(colour=guide_legend(title=NULL)) +
+  labs(x=NULL, y=NULL) + coord_flip() +
+  scale_y_date(date_breaks="2 days", labels=date_format("%b ‘%y")) +
+  theme_gantt() + theme(axis.text.x=element_text(angle=45, hjust=1))
+timeline
+
+
+#--------------------------------
+
+start_date <- as.Date('2017-01-01')
+
+ 
+ggplot(SessionDataNoSyslogout[1:10,], aes(value, userid.x)) + 
+  geom_line(size = 3) +
+  labs(x = '', y = '', title = 'Gantt chart using ggplot2') +
+  theme_bw(base_size = 20) +
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.grid.major.x = element_line(colour="black", linetype = "dashed"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_text(angle = 0)) +
+  scale_x_date(date_labels = "%h", limits = c(start_date, NA), date_breaks = '1 day')
+  
+#-------------------------
+
+
+
+  
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+gantt1 <- data.frame(name = c('Bob', 'Greg', 'Mike', 'Andy'), 
+start = c(4, 7, 12, 16),
+end = c(12, 11, 8, 22),
+shift_type = c('early', 'mid_day', 'mid_day', 'late')
+)
+  
+ggplot(gantt1, aes(x=start, xend=end, y=name, yend=name, color=shift_type)) +
+  geom_segment()
+  
+line <- data.frame(x=1:10,y=11:20)
+library(ggplot2)
+ggplot(line, aes(x=x,y=y))+geom_line()+geom_point()
+
+install.packages("ggplot2")
+library(ggplot2)
+
+line <- data.frame("x" = c(1,2,3,4,5,6,7,8,9,10))
+line <- cbind(line, "y" = c(11,12,13,14,15,16,17,18,19,20))
+ggplot(line, aes(x = x, y = y, group = 1))+geom_point()
+-----------------------------
+
+You're dealing with a lot of data, so a single chart that shows all users for the whole month would be impossible to read. How are you going to break this out into multiple, manageable charts? It's okay to produce a chart for each week in the month. Just show the code that creates all the charts.
+
+```
+# insert your code that produces the correct result here; this should include your data wrangling and ggplot2 construction
+```
+
+### Submissions
+
+Because we all will be working with the same data, you will only need to send me an updated version of this Markdown file. Please save it as *lastname_firstinitial_Project2.Rmd* and email to me directly at [jon@fowlercs.com](mailto:jon@fowlercs.com). Submissions must be made by **May 19 2020 11:59PM ET**. 
+
+### Resources 
+
+#### Gantt charts
+
+[https://www.statology.org/gantt-chart-r-ggplot2/](https://www.statology.org/gantt-chart-r-ggplot2/) <br>
+[https://stats.andrewheiss.com/misc/gantt.html](https://stats.andrewheiss.com/misc/gantt.html) <br> 
+[https://davetang.org/muse/2017/02/03/gantt-chart-using-r/](https://davetang.org/muse/2017/02/03/gantt-chart-using-r/) <br>
+[https://datascienceplus.com/visualize-your-cvs-timeline-with-r-gantt-style/](https://datascienceplus.com/visualize-your-cvs-timeline-with-r-gantt-style/) <br>
+[https://edwinth.github.io/blog/paletti/](https://edwinth.github.io/blog/paletti/)
+[https://drsimonj.svbtle.com/creating-corporate-colour-palettes-for-ggplot2](https://drsimonj.svbtle.com/creating-corporate-colour-palettes-for-ggplot2)
+[http://www.sthda.com/english/wiki/ggplot2-colors-how-to-change-colors-automatically-and-manually](http://www.sthda.com/english/wiki/ggplot2-colors-how-to-change-colors-automatically-and-manually)
+
+
+#### R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
